@@ -1,6 +1,6 @@
 # 考研 Gemini 专属私教 Prompt
 
-面向 **数学一 + 英语一 + 408 统考** 考生的 Gemini 私教 Prompt 集合。一门科目对应一个 Gem，也可直接粘贴到普通对话的 System Instruction。
+面向 **数学一 + 英语一 + 政治 + 408 统考** 考生的 Gemini 私教 Prompt 集合。一门科目对应一个 Gem，也可直接粘贴到普通对话的 System Instruction。
 
 ## 两层结构
 
