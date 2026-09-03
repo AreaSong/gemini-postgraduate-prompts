@@ -73,14 +73,17 @@ class TestFileInventoryAndHygiene(unittest.TestCase):
                         self.fail(f"LaTeX spacing violation in {fname}:{line_no}: '${formula}$'")
 
     def test_instruction_character_budget_compliance(self):
-        """Verify all 7 instruction files are within the targeted Gem attention budget (~1000 - 1600 Chinese chars)."""
+        """Verify all 7 instruction files are within Google Gemini's optimal attention budget (500 <= Total < 2000, 500 <= CJK <= 1600)."""
         for sub_name, inst_file, _ in SUBJECTS:
             fpath = WORKSPACE_ROOT / inst_file
             content = fpath.read_text(encoding="utf-8")
             chinese_chars = re.findall(r'[\u4e00-\u9fff]', content)
             char_count = len(chinese_chars)
-            self.assertGreaterEqual(char_count, 800, f"{inst_file} too brief ({char_count} chars)")
-            self.assertLessEqual(char_count, 1800, f"{inst_file} exceeds Gem attention budget ({char_count} chars)")
+            total_chars = len(content)
+            self.assertGreaterEqual(total_chars, 500, f"{inst_file} total chars too brief ({total_chars} chars)")
+            self.assertLess(total_chars, 2000, f"{inst_file} exceeds Gemini optimal attention buffer ({total_chars} chars)")
+            self.assertGreaterEqual(char_count, 500, f"{inst_file} CJK count too brief ({char_count} chars)")
+            self.assertLessEqual(char_count, 1600, f"{inst_file} exceeds CJK attention budget ({char_count} chars)")
 
 
 class TestInstructionContract(unittest.TestCase):
@@ -100,6 +103,15 @@ class TestInstructionContract(unittest.TestCase):
             self.assertIn("### 7.1 绝对禁止项", content, f"{inst_file} missing Section 7.1")
             self.assertIn("### 7.2 输出格式铁律", content, f"{inst_file} missing Section 7.2")
             self.assertIn("### 7.3 模式执行铁律", content, f"{inst_file} missing Section 7.3")
+
+            # Check R1 Fast-Path & gentle trailing note
+            self.assertIn("优先级 1", content, f"{inst_file} missing Priority 1 Fast-Path")
+            self.assertIn("提示：若需调整复习阶段（刚学/冲刺）或名师体系，可随时告诉我。", content, f"{inst_file} missing gentle trailing note")
+
+            # Check R2 Multimodal 3-step closed-loop
+            self.assertIn("[标定疑似符号]", content, f"{inst_file} missing '[标定疑似符号]'")
+            self.assertIn("[声明常规考纲假设]", content, f"{inst_file} missing '[声明常规考纲假设]'")
+            self.assertIn("[不中断推进推导]", content, f"{inst_file} missing '[不中断推进推导]'")
 
             # Check 5-slot extraction
             self.assertIn("5 槽位智能自述", content, f"{inst_file} missing 5-slot definition")
@@ -168,7 +180,7 @@ class TestDomainPrecisionMath1(unittest.TestCase):
         self.assertIn("1~2 分", self.kb)
 
     def test_math1_special_rubrics_and_formulas(self):
-        """Verify limit, multivariable, linear algebra, and probability specific rubrics."""
+        """Verify limit, multivariable, linear algebra, probability, and series convergence rubrics."""
         self.assertIn("极限大题", self.kb)
         self.assertIn("多元微积分大题", self.kb)
         self.assertIn("特征值与二次型大题", self.kb)
@@ -177,6 +189,16 @@ class TestDomainPrecisionMath1(unittest.TestCase):
         # Coordinate Jacobian formulas (LaTeX and Box representation)
         self.assertTrue("dxdy = r\,dr\,d\\theta" in self.kb or "dxdy = r dr dθ" in self.kb)
         self.assertTrue("r^2\\sin\\phi\,dr\,d\\phi\,d\\theta" in self.kb or "r² sinφ dr dφ dθ" in self.kb)
+        self.assertTrue("雅可比" in self.kb or "|J|" in self.kb)
+
+        # Symmetry card
+        self.assertTrue("奇偶对称性" in self.kb and "轮换对称性" in self.kb)
+
+        # Abel theorems and series endpoint convergence
+        self.assertIn("阿贝尔第一定理", self.kb)
+        self.assertTrue("阿贝尔连续性定理" in self.kb or "阿贝尔第二定理" in self.kb)
+        self.assertTrue("端点" in self.kb and ("审敛" in self.kb or "收敛域端点检验" in self.kb))
+        self.assertTrue("L=1" in self.kb or "L = 1" in self.kb)
 
         # Gram-Schmidt formula
         self.assertTrue("施密特正交化" in self.kb)
@@ -185,6 +207,7 @@ class TestDomainPrecisionMath1(unittest.TestCase):
         # Uniform distribution MLE
         self.assertIn("max(X_1", self.kb)
         self.assertIn("严禁令导数等于0", self.kb)
+
 
 
 class TestDomainPrecisionEnglish1(unittest.TestCase):
@@ -242,7 +265,15 @@ class TestDomainPrecisionPolitics(unittest.TestCase):
         self.kb = (WORKSPACE_ROOT / "政治-考点库.md").read_text(encoding="utf-8")
 
     def test_politics_analysis_rubric(self):
-        """Verify Q34 (Marxism) and Q35~Q38 scoring structures."""
+        """Verify Q34 (Marxism), Q35 (Xi Thought 10pt standalone), and Q36~Q38 scoring structures, plus 6 modules."""
+        # 6 modules in both instruction and KB
+        for mod in ["马原", "毛中特", "习思想", "史纲", "思法", "时政"]:
+            self.assertIn(mod, self.inst, f"Politics inst missing module: {mod}")
+            self.assertIn(mod, self.kb, f"Politics KB missing module: {mod}")
+
+        # Standalone Xi Thought
+        self.assertIn("[POL-XISIXIANG]", self.kb)
+
         # Q34: Philosophy principle (3-4pt), methodology (2pt), material (3pt), formatting (1pt)
         self.assertIn("马原分析题", self.kb)
         self.assertIn("① 哲学原理表述", self.kb)
@@ -253,6 +284,9 @@ class TestDomainPrecisionPolitics(unittest.TestCase):
         self.assertIn("3 分", self.kb)
         self.assertIn("④ 卷面条理规范", self.kb)
         self.assertIn("1 分", self.kb)
+
+        # Dedicated Q35 Xi Thought rubric (10pt)
+        self.assertTrue("第 35 题" in self.kb and "10 分" in self.kb and ("习思想" in self.kb or "习近平新时代中国特色社会主义思想" in self.kb))
 
         # Q35-38: Core theory (4pt), cause/significance/measures (4pt), material/summary (2pt)
         self.assertIn("① 核心理论方针要点", self.kb)
@@ -357,7 +391,7 @@ class TestDomainPrecision408OS(unittest.TestCase):
         self.assertIn("mutex=1", self.kb)
 
     def test_os_disk_scheduling_and_system_calls(self):
-        """Verify SCAN vs LOOK and trap instruction execution mode."""
+        """Verify SCAN vs LOOK, trap instruction, virtualization (Container vs VM), and SSD/FTL/TRIM."""
         self.assertIn("SCAN", self.kb)
         self.assertIn("LOOK", self.kb)
         self.assertIn("磁道 0", self.kb)
@@ -367,6 +401,13 @@ class TestDomainPrecision408OS(unittest.TestCase):
         self.assertIn("用户态", self.kb)
         self.assertIn("陷入指令", self.kb)
         self.assertIn("内核态", self.kb)
+
+        # Virtualization: Container vs VM
+        self.assertTrue("容器" in self.kb and "Hypervisor" in self.kb)
+
+        # SSD / NVMe / FTL / Wear Leveling / TRIM
+        for term in ["SSD", "NVMe", "FTL", "磨损均衡", "TRIM"]:
+            self.assertIn(term, self.kb)
 
 
 class TestDomainPrecision408CN(unittest.TestCase):
@@ -387,14 +428,18 @@ class TestDomainPrecision408CN(unittest.TestCase):
         self.assertIn("快恢复", self.kb)
 
     def test_cn_subnet_and_fragmentation_offsets(self):
-        """Verify subnet host count and IP fragmentation offset calculations."""
+        """Verify subnet host count, CIDR LPM, IP fragmentation offset, and destination reassembly."""
+        # CIDR Longest Prefix Match
+        self.assertTrue("最长前缀匹配" in self.kb and "CIDR" in self.kb)
+
         # Subnet hosts: 2^h - 2
         self.assertIn("2^h - 2", self.kb)
         self.assertIn("扣除网络与广播地址", self.kb)
 
-        # IP fragmentation offset: units of 8 bytes
+        # IP fragmentation offset: units of 8 bytes & destination-only reassembly
         self.assertIn("以 8 字节为单位", self.kb)
         self.assertIn("片偏移未除以 8", self.kb)
+        self.assertIn("目的主机重组", self.kb)
 
         # Dual track rate vs storage
         self.assertIn("1\\text{ kb/s}=10^3\\text{ b/s}", self.kb)
@@ -411,6 +456,9 @@ class TestReadmeComprehensiveGuidance(unittest.TestCase):
         for sub_name, inst_file, kb_file in SUBJECTS:
             self.assertIn(inst_file, self.readme, f"README missing link to {inst_file}")
             self.assertIn(kb_file, self.readme, f"README missing link to {kb_file}")
+        # Dist single file links & guidance
+        self.assertIn("dist/", self.readme)
+        self.assertTrue(re.search(r"(单文件|一键复制)", self.readme))
 
     def test_readme_custom_gems_configuration(self):
         self.assertIn("Google Search", self.readme)

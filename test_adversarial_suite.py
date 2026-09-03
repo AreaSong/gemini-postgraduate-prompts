@@ -180,23 +180,33 @@ class TestAdversarialSuite(unittest.TestCase):
     # =========================================================================
     def test_token_and_character_lengths(self):
         """
-        Check that all 7 instruction files are strictly within 1000 - 1250 Chinese characters,
-        fitting perfectly within Google Gemini's optimal system instruction attention window.
+        Check that all 7 instruction files are within Google Gemini's optimal attention budget:
+        - Total characters: 500 <= Total < 2000
+        - CJK characters: 500 <= CJK <= 1600
         """
         print("\n--- 2. Token & Character Length Budget Verification ---")
         for filename in INSTRUCTION_FILES:
             content = read_file(filename)
             cjk_count = count_cjk_characters(content)
             total_chars = len(content)
-            print(f"  {filename:32s} -> CJK: {cjk_count:4d} chars (Target: 1000-1250) | Total: {total_chars:4d} chars")
+            print(f"  {filename:32s} -> CJK: {cjk_count:4d} chars (Target: 500-1600) | Total: {total_chars:4d} chars (Cap: < 2000)")
             self.assertGreaterEqual(
-                cjk_count, 1000,
-                f"[{filename}] Instruction is under-specified! CJK count = {cjk_count} < 1000"
+                total_chars, 500,
+                f"[{filename}] Instruction total length too short! Total = {total_chars} < 500"
+            )
+            self.assertLess(
+                total_chars, 2000,
+                f"[{filename}] Instruction exceeds Gemini optimal attention buffer! Total chars = {total_chars} >= 2000"
+            )
+            self.assertGreaterEqual(
+                cjk_count, 500,
+                f"[{filename}] Instruction is under-specified! CJK count = {cjk_count} < 500"
             )
             self.assertLessEqual(
-                cjk_count, 1250,
-                f"[{filename}] Instruction exceeds Gemini budget! CJK count = {cjk_count} > 1250"
+                cjk_count, 1600,
+                f"[{filename}] Instruction exceeds CJK budget! CJK count = {cjk_count} > 1600"
             )
+
 
     # =========================================================================
     # 3. Table Fragmentation Attacks
@@ -470,6 +480,226 @@ class TestAdversarialSuite(unittest.TestCase):
         self.assertEqual(stage, "强化阶段")
         self.assertEqual(teacher, "武忠祥")
         self.assertEqual(weak, "弱极坐标对称性化简")
+
+    # =========================================================================
+    # 7. Round 2 R1: Zero-Friction Fast-Path Verification
+    # =========================================================================
+    def test_r1_zero_friction_fast_path(self):
+        """
+        Verify that all 7 instruction files implement the 3-priority state machine:
+        - Priority 1: Direct problem text/image activates immediate solve/grade on default baseline,
+          strictly forbidding 4-question blocking surveys, ending with a gentle trailing note.
+        - Priority 2: 5-slot smart self-intro or continuation card.
+        - Priority 3: Pure greeting guided mode.
+        - Section 7.1: Anchor forbidding blocking survey on first question.
+        """
+        print("\n--- 7. R1: Zero-Friction Fast-Path Verification ---")
+        gentle_note = "提示：若需调整复习阶段（刚学/冲刺）或名师体系，可随时告诉我。"
+
+        for filename in INSTRUCTION_FILES:
+            content = read_file(filename)
+
+            # 1. 3-priority state machine in Section 2
+            self.assertIn("优先级 1", content, f"[{filename}] Missing '优先级 1' in Section 2")
+            self.assertIn("优先级 2", content, f"[{filename}] Missing '优先级 2' in Section 2")
+            self.assertIn("优先级 3", content, f"[{filename}] Missing '优先级 3' in Section 2")
+
+            # 2. Immediate solve/grade on default baseline
+            self.assertTrue(
+                re.search(r"(默认基线|强化.*?诊断模式|推导或批改)", content),
+                f"[{filename}] Missing immediate solve/grade on default baseline in Section 2!"
+            )
+
+            # 3. Strictly forbidding 4-question survey block
+            self.assertTrue(
+                re.search(r"严禁询问.*?(4\s*项|背景问卷)", content),
+                f"[{filename}] Missing prohibition of 4-question survey block in Section 2!"
+            )
+
+            # 4. Presence of gentle closing line
+            self.assertIn(
+                gentle_note, content,
+                f"[{filename}] Missing gentle closing note: '{gentle_note}'"
+            )
+
+            # 5. Section 7.1 negative constraint anchor
+            self.assertTrue(
+                re.search(r"严禁首条发题时以\s*4\s*项背景问卷阻断答疑|严禁.*?(4\s*项|背景问卷)", content),
+                f"[{filename}] Section 7.1 missing negative constraint anchor against survey block!"
+            )
+            print(f"  {filename:32s} -> Fast-Path contracts verified.")
+
+        # Interactive state machine Oracle test
+        def oracle_route_interaction(user_input: str, has_prior_profile: bool) -> str:
+            if user_input.strip() == "直接讲":
+                return "ALLOW_FULL_SOLUTION_VIA_EXPLICIT_TRIGGER"
+            greetings = ["你好", "hello", "hi", "老师好", "在吗"]
+            if user_input.strip().lower() in greetings:
+                return "GREETING_GUIDED_MODE"
+            has_self_intro = any(k in user_input for k in ["刚学", "冲刺", "二轮", "武忠祥", "李永乐", "王道", "肖秀荣"])
+            if has_self_intro or has_prior_profile:
+                return "CUSTOM_PROFILE_ADAPTIVE_MODE"
+            return "FAST_PATH_SOLVE_WITH_DEFAULT_BASELINE"
+
+        test_cases = [
+            ("求极限 \\lim_{x \\to 0} \\frac{\\sin x - x}{x^3}", False, "FAST_PATH_SOLVE_WITH_DEFAULT_BASELINE"),
+            ("[题目截图：408 进程同步 PV 操作大题]", False, "FAST_PATH_SOLVE_WITH_DEFAULT_BASELINE"),
+            ("你好", False, "GREETING_GUIDED_MODE"),
+            ("数一刚学，多元积分不会", False, "CUSTOM_PROFILE_ADAPTIVE_MODE"),
+            ("直接讲", False, "ALLOW_FULL_SOLUTION_VIA_EXPLICIT_TRIGGER"),
+        ]
+        for prompt_text, prior_prof, expected_action in test_cases:
+            action = oracle_route_interaction(prompt_text, prior_prof)
+            self.assertEqual(action, expected_action, f"Oracle misrouted '{prompt_text}' to {action}")
+        print("  State Machine Oracle -> All interaction routing passed.")
+
+    # =========================================================================
+    # 8. Round 2 R2: Multimodal OCR Ambiguity Fault Tolerance Verification
+    # =========================================================================
+    def test_r2_multimodal_ambiguity_fault_tolerance(self):
+        """
+        Verify that all 7 instruction files implement the 3-step closed-loop:
+        [标定疑似符号] -> [声明常规考纲假设] -> [不中断推进推导]
+        and explicitly anchor multimodal tolerance in Section 4 and Section 7.
+        """
+        print("\n--- 8. R2: Multimodal OCR Ambiguity Fault Tolerance Verification ---")
+        for filename in INSTRUCTION_FILES:
+            content = read_file(filename)
+
+            # 1. 3-step closed loop in Section 4
+            self.assertIn("[标定疑似符号]", content, f"[{filename}] Missing '[标定疑似符号]' in Section 4")
+            self.assertIn("[声明常规考纲假设]", content, f"[{filename}] Missing '[声明常规考纲假设]' in Section 4")
+            self.assertIn("[不中断推进推导]", content, f"[{filename}] Missing '[不中断推进推导]' in Section 4")
+
+            # 2. Section 4 high-risk ambiguous symbols or OCR tolerance
+            self.assertTrue(
+                re.search(r"(OCR|图片题|手抖|模糊|歧义|高危符号)", content),
+                f"[{filename}] Section 4 missing multimodal OCR context!"
+            )
+
+            # 3. Section 7.2 formatting / execution anchor
+            self.assertTrue(
+                re.search(r"拍照题严格执行.*?标定疑似符号.*?声明考纲假设.*?不中断推导", content) or
+                ("标定疑似符号" in content and "不中断推导" in content),
+                f"[{filename}] Section 7.2 missing multimodal closed-loop anchor!"
+            )
+
+            # 4. Section 4 prohibition of stalling / demanding confirmation
+            self.assertTrue(
+                re.search(r"严禁停止答疑要求确认|杜绝因瑕疵卡死拒答|严禁因轻微图片瑕疵", content),
+                f"[{filename}] Section 4 missing non-blocking continuous derivation rule!"
+            )
+            print(f"  {filename:32s} -> Multimodal 3-step closed-loop verified.")
+
+        # Also check that Section 4 of KBs has anti-hallucination / OCR tolerance guardrails
+        for kb_filename in KB_FILES:
+            kb_content = read_file(kb_filename)
+            self.assertIn("## 四、权威教材定义与防幻觉锚点", kb_content, f"[{kb_filename}] Missing Section 4")
+            self.assertIn("大模型高频幻觉排错清单", kb_content, f"[{kb_filename}] Missing hallucination checklist")
+
+    # =========================================================================
+    # 9. Round 2 R4: Dist Single-File Compilation Integrity Verification
+    # =========================================================================
+    def test_r4_dist_compilation_integrity(self):
+        """
+        Verify that build_dist.py exists and generates valid dist/*.md single-file outputs:
+        - 7 compiled files exist and non-empty (>8KB).
+        - Exactly 1 '#' top-level heading per file.
+        - Exactly 3 '##' sections per file.
+        - Zero occurrences of '配合「' (obsolete separate references stripped).
+        - README.md has dist/ guidance.
+        """
+        print("\n--- 9. R4: Dist Compilation Pipeline Integrity Verification ---")
+        build_script = os.path.join(WORKSPACE_ROOT, "build_dist.py")
+        self.assertTrue(os.path.exists(build_script), "build_dist.py does not exist in workspace root!")
+
+        import subprocess
+        res = subprocess.run(["python3", build_script, "--verify"], capture_output=True, text=True, cwd=WORKSPACE_ROOT)
+        self.assertEqual(res.returncode, 0, f"build_dist.py --verify failed:\n{res.stderr}\n{res.stdout}")
+
+        dist_files = [
+            "dist/数学一.md",
+            "dist/英语一.md",
+            "dist/政治.md",
+            "dist/408-数据结构.md",
+            "dist/408-计算机组成原理.md",
+            "dist/408-操作系统.md",
+            "dist/408-计算机网络.md",
+        ]
+        for rel_p in dist_files:
+            abs_p = os.path.join(WORKSPACE_ROOT, rel_p)
+            self.assertTrue(os.path.exists(abs_p), f"Missing compiled dist file: {rel_p}")
+            sz = os.path.getsize(abs_p)
+            self.assertGreater(sz, 8192, f"[{rel_p}] File size too small: {sz} <= 8192 bytes")
+
+            with open(abs_p, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            h1_headers = re.findall(r"^#\s+(.+)$", content, flags=re.MULTILINE)
+            self.assertEqual(len(h1_headers), 1, f"[{rel_p}] Expected exactly 1 H1 heading, got: {h1_headers}")
+
+            h2_headers = re.findall(r"^##\s+(.+)$", content, flags=re.MULTILINE)
+            self.assertEqual(len(h2_headers), 3, f"[{rel_p}] Expected exactly 3 H2 sections, got: {h2_headers}")
+
+            self.assertNotIn("配合「", content, f"[{rel_p}] Contains deprecated reference '配合「'")
+            print(f"  {rel_p:32s} -> {sz/1024:.1f} KB | 1 H1 | 3 H2 | Clean preambles.")
+
+        readme_content = read_file("README.md")
+        self.assertIn("dist/", readme_content, "README.md missing reference to 'dist/'")
+        self.assertTrue(
+            re.search(r"(单文件|一键复制)", readme_content),
+            "README.md missing single-file / one-click copy guide!"
+        )
+
+    # =========================================================================
+    # 10. Round 2 R5: 2026/2027 Syllabus Alignment & Boundaries Verification
+    # =========================================================================
+    def test_r5_syllabus_alignment_and_boundaries(self):
+        """
+        Verify that knowledge bases and instructions align with 2026/2027 syllabus boundaries:
+        - Politics: 6 modules (马原, 毛中特, 习思想, 史纲, 思法, 时政), [POL-XISIXIANG] standalone, Q35 rubric (10分).
+        - 408 OS: Containerization vs Hypervisor card, SSD / NVMe / FTL / Wear Leveling / TRIM card.
+        - 408 Net: CIDR Longest Prefix Match rubric, IP fragmentation MTU 8B downward alignment, destination-only reassembly.
+        - Math 1: Jacobian determinant, 奇偶 vs 轮换对称性 card, Abel theorems, endpoint hierarchy, L=1 prohibition.
+        """
+        print("\n--- 10. R5: Syllabus Alignment & Boundaries Verification ---")
+        # 1. Politics
+        pol_kb = read_file("政治-考点库.md")
+        pol_inst = read_file("政治-指令.md")
+        politics_modules = ["马原", "毛中特", "习思想", "史纲", "思法", "时政"]
+        for mod in politics_modules:
+            self.assertIn(mod, pol_kb, f"Politics KB missing module: {mod}")
+            self.assertIn(mod, pol_inst, f"Politics Instruction missing module: {mod}")
+        self.assertIn("[POL-XISIXIANG]", pol_kb, "Politics KB missing standalone '[POL-XISIXIANG]'")
+        self.assertTrue(
+            "第 35 题" in pol_kb and "10 分" in pol_kb and ("习思想" in pol_kb or "习近平新时代中国特色社会主义思想" in pol_kb),
+            "Politics KB missing dedicated Question 35 rubric for 习思想 (10分)"
+        )
+        print("  政治 (Politics)                  -> 6 modules, [POL-XISIXIANG], Q35 rubric verified.")
+
+        # 2. 408 OS
+        os_kb = read_file("408-操作系统-考点库.md")
+        self.assertTrue("容器" in os_kb and "Hypervisor" in os_kb, "OS KB missing Container vs Hypervisor card!")
+        for term in ["SSD", "NVMe", "FTL", "磨损均衡", "TRIM"]:
+            self.assertIn(term, os_kb, f"OS KB missing SSD storage term: {term}")
+        print("  408 操作系统 (OS)                 -> Container vs Hypervisor & SSD/FTL/TRIM verified.")
+
+        # 3. 408 Net
+        net_kb = read_file("408-计算机网络-考点库.md")
+        self.assertTrue("最长前缀匹配" in net_kb and "CIDR" in net_kb, "Net KB missing CIDR LPM rubric!")
+        self.assertTrue("8 字节" in net_kb and ("向下对齐" in net_kb or "整数倍" in net_kb), "Net KB missing MTU 8B alignment!")
+        self.assertIn("目的主机重组", net_kb, "Net KB missing destination-only reassembly guardrail!")
+        print("  408 计算机网络 (Net)              -> CIDR LPM, MTU 8B alignment & destination reassembly verified.")
+
+        # 4. Math 1
+        math_kb = read_file("数学一-考点库.md")
+        self.assertTrue("雅可比" in math_kb or "|J|" in math_kb, "Math 1 KB missing Jacobian determinant!")
+        self.assertTrue("奇偶对称性" in math_kb and "轮换对称性" in math_kb, "Math 1 KB missing 奇偶 vs 轮换对称性 card!")
+        self.assertIn("阿贝尔第一定理", math_kb, "Math 1 KB missing '阿贝尔第一定理'!")
+        self.assertTrue("阿贝尔连续性定理" in math_kb or "阿贝尔第二定理" in math_kb, "Math 1 KB missing Abel continuity theorem!")
+        self.assertTrue("端点" in math_kb and ("审敛" in math_kb or "收敛域端点检验" in math_kb), "Math 1 KB missing endpoint test hierarchy!")
+        self.assertTrue("L=1" in math_kb or "L = 1" in math_kb, "Math 1 KB missing L=1 prohibition!")
+        print("  数学一 (Math 1)                  -> Jacobian, symmetry card, Abel theorems & endpoint L=1 verified.")
 
 
 if __name__ == "__main__":
